@@ -1,0 +1,12 @@
+# Validated on Apple Silicon with Python 3.10.21; see requirements-lock.txt.
+tensorflow-macos==2.10.0
+keras==2.10.0
+numpy==1.23.4
+opencv-python-headless==4.6.0.66
+matplotlib==3.6.1
+pandas==1.5.1
+scikit-image==0.19.3
+scipy==1.9.3
+Pillow==9.2.0
+h5py==3.7.0
+openpyxl==3.0.10
