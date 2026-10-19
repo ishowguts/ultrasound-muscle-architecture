@@ -10,3 +10,4 @@ scipy==1.9.3
 Pillow==9.2.0
 h5py==3.7.0
 openpyxl==3.0.10
+gradio==5.49.1

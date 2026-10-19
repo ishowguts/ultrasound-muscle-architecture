@@ -36,19 +36,56 @@ From the project directory:
 .venv/bin/python run_analysis.py --manifest sample_manifest.json --output outputs/umud_run1
 ```
 
-Every run requires a **new output directory**. `sample_manifest.json` contains the eight checked UMUD inputs and explicit horizontal orientation flags. For another image, create a JSON list:
+Every run requires a **new output directory**.
 
-```json
-[{"path": "data/my_scan.tif", "flip": 0}]
+### Kaggle submission (UMUD test set)
+
+```sh
+.venv/bin/python test_submission.py
+.venv/bin/python run_analysis.py --manifest test_manifest_309.json --output outputs/test309_run1
+.venv/bin/python make_submission.py outputs/test309_run1 --output outputs/submission_v1
 ```
 
-`flip: 1` horizontally reverses the image for analysis. Select orientation by inspecting the scan; automatic orientation detection is not implemented. Optional `mm_per_pixel` must come from verified scan calibration, not TIFF DPI. The current conversion assumes the same pixel spacing on both axes.
+`test_manifest_309.json` lists all 309 test images with automatic orientation, crop and ruler detection (`"calibration": {"method": "auto"}`). The ruler detector knows the layouts of the three test-set devices and reads the vertical scale (or the bottom 1 cm ticks on older scans), as the organisers specify. `make_submission.py` writes comma-separated `submission.csv` (`image_id,pa_deg,fl_mm,mt_mm`), an identical `submission_comma.csv` compatibility copy, and `details.csv` showing for every value whether it was measured, or filled with the median of the same scan layout (failed analysis, undetected ruler, or a value outside the label ranges published by the organisers, which signals a wrong aponeurosis or fascicle pick). The run is fully automatic; no test image is labelled by hand.
+
+### Short video (offline)
+
+```sh
+.venv/bin/python test_video.py
+.venv/bin/python run_video.py data/raw/dltrack_examples/video/video_calf_raise.mp4 --output outputs/video_run1
+```
+
+Uses the authors' video routine unchanged: the image aponeurosis model plus the temporal IFSS fascicle model on stacks of three frames. Orientation is chosen automatically on the first frame (`--flip 0/1` to override). Outputs `frames.csv` (per-frame status, thickness, fascicle length, pennation), `timeseries.png`, `annotated.mp4` and `run.json`. The first two analysed frames only fill the frame stack. `--step N` analyses every Nth frame, `--start`/`--frames` select a segment, and `--mm-per-pixel` applies a verified scale. Frames are not cropped.
+
+### Web app
+
+```sh
+.venv/bin/python test_app.py
+.venv/bin/python app.py
+```
+
+Opens `http://127.0.0.1:7860` (this computer only, no public link). Upload a scan, optionally tick calibration and click two marks on the scan's depth ruler with their real distance in millimetres, then **Analyse**. The result shows the overlay, status, measurements in pixels (and millimetres when calibrated), and CSV/JSON/overlay downloads. Each analysis is saved under `outputs/app_runs/`. Exported files contain the image file name, not local paths. `sample_manifest.json` contains the eight checked UMUD inputs and explicit horizontal orientation flags. For another image, create a JSON list:
+
+```json
+[{"path": "data/my_scan.tif"}]
+```
+
+- `flip`: `0`, `1` (horizontally reverse for analysis) or `"auto"` (default). Auto runs both orientations and keeps the better result: a usable status first, then more retained fascicles; ties keep `0`. It doubles inference time. Both candidates are recorded in `measurements.json`.
+- `crop`: `"auto"` (default), `"none"` or `[x0, y0, x1, y1]` in original pixels. Auto finds the largest non-black region and crops to it only when that removes at least 25% of the frame, so letterboxed screenshots lose their black borders and UI text before resizing to 512 × 512. Grey interface panels are not removed; pass an explicit box for those. All exported coordinates and masks are mapped back to the full original image.
+- `calibration` (optional), measured on the full original image before any crop:
+  - `{"method": "manual", "points": [[x, y], [x, y]], "distance_mm": 10}`: two points on the vertical ruler and their known distance. Only the vertical pixel separation is used.
+  - `{"method": "bar", "spacing_mm": 5, "confirmed": true}`: the pinned upstream scale-bar detector. Without `"confirmed": true` the detection is recorded as a candidate and no millimetres are produced. Confirm only after checking the detected marks and their spacing.
+- `mm_per_pixel`: alternative to `calibration` for an already verified scale. Never derive it from TIFF DPI.
+
+Millimetre values assume the same pixel spacing on both axes; raw pixel values are always kept.
 
 ## Outputs
 
 - `measurements.csv` and `run.json`: results, status, runtime, settings, checkpoint hashes and source revision.
 - Per image: `overlay.png` (when geometry is available), `lines.json`, `measurements.json`, two thresholded mask PNGs and `probabilities.npz`.
 - Overlays, masks and line coordinates refer to the original image. Probability arrays retain the 512 × 512 analysis orientation; apply the recorded flip when using them elsewhere.
-- `ok` means finite measurements were produced, not that their anatomical accuracy is established. Other statuses include `no_geometry`, `no_fascicles`, `invalid_geometry` and `error`. Missing results are null, not zero. Extrapolated line points may extend outside the image.
+- `ok` means finite measurements were produced, not that their anatomical accuracy is established. `low_confidence` means finite measurements from fewer than 3 retained fascicles; numbers are exported but should not be trusted without review. Other statuses include `no_geometry`, `no_fascicles`, `invalid_geometry` and `error`. Missing results are null, not zero. Extrapolated line points may extend outside the image.
 
 The default `reference` settings follow the upstream documented backup. `--profile current` uses the pinned source's current settings file, which differs from that reference. Model inference is performed once per image and model, followed by the unmodified upstream geometry routine. Physical calibration, manual ground-truth evaluation, a user interface and video integration remain separate work.
+
+The Kaggle uploader requires commas: uploading a semicolon-separated file produces `ID column image_id not found in submission`. For the preserved v2 baseline, upload `outputs/submission_v2/submission_comma.csv`. New exports use commas by default. A successful upload and returned score are still required; local format checks do not measure accuracy.
