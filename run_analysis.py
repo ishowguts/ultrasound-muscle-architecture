@@ -230,9 +230,18 @@ def pick(upstream, guided, min_thickness_px):
     return 1 if key(guided) > key(upstream) else 0
 
 
-def infer(region, flip, models, geometry, settings, min_thickness_px=None):
+def ifss_fascicles(oriented, ifss):
+    """Fascicle map from the video IFSS model: one frame stacked x3, middle frame, channel 0 (as the upstream video routine)."""
+    gray = cv2.resize(cv2.cvtColor(oriented, cv2.COLOR_BGR2GRAY), (512, 512), interpolation=cv2.INTER_AREA).astype(np.float32) / 255
+    stack = np.repeat(gray[None, None, :, :, None], 3, axis=1)
+    return tf.clip_by_value(ifss([stack], training=False), 0, 1).numpy()[:, 1, :, :, :1]
+
+
+def infer(region, flip, models, geometry, settings, min_thickness_px=None, ifss=None):
     oriented, batch = to_batch(region, flip)
-    predictions = {k: m(batch, training=False).numpy() for k, m in models.items()}
+    predictions = {k: m(batch, training=False).numpy() for k, m in models.items() if not (ifss is not None and k == 'fasc')}
+    if ifss is not None:
+        predictions['fasc'] = ifss_fascicles(oriented, ifss)
     for p in predictions.values():
         if p.shape != (1, 512, 512, 1) or not np.isfinite(p).all():
             raise ValueError('Invalid model prediction')
@@ -256,7 +265,7 @@ def infer(region, flip, models, geometry, settings, min_thickness_px=None):
     return SimpleNamespace(flip=flip, predictions=predictions, fig=fig, summary=summary)
 
 
-def analyse(item, models, geometry, settings, out):
+def analyse(item, models, geometry, settings, out, ifss=None):
     path = ROOT / item['path']
     flip = item.get('flip', 'auto')
     if flip != 'auto' and (type(flip) is not int or flip not in (0, 1)):
@@ -277,18 +286,36 @@ def analyse(item, models, geometry, settings, out):
     region = original[y0:y1, x0:x1]
     height, width = region.shape[:2]
     min_thickness_px = 10 / scale if scale else None  # published lower bound of test-set thickness
-    candidates = []
-    for f in ((0, 1) if flip == 'auto' else (flip,)):
-        try:
-            candidates.append(infer(region, f, models, geometry, settings, min_thickness_px))
-        except Exception as error:
-            # Upstream geometry can raise in one orientation only (IMG_00232); keep the other.
-            if flip != 'auto':
-                raise
-            plt.close('all')
-            candidates.append(SimpleNamespace(flip=f, error=error, fig=None, summary={
-                'fascicle_count': 0, 'status': 'error', 'error': f'{type(error).__name__}: {error}'}))
+    def run(fascicle_model):
+        found = []
+        for f in ((0, 1) if flip == 'auto' else (flip,)):
+            try:
+                found.append(infer(region, f, models, geometry, settings, min_thickness_px, fascicle_model))
+            except Exception as error:
+                # Upstream geometry can raise in one orientation only (IMG_00232); keep the other.
+                if flip != 'auto':
+                    raise
+                plt.close('all')
+                found.append(SimpleNamespace(flip=f, error=error, fig=None, summary={
+                    'fascicle_count': 0, 'status': 'error', 'error': f'{type(error).__name__}: {error}'}))
+        return found
+    candidates = run(None)
     chosen = candidates[choose([c.summary for c in candidates])]
+    chosen.summary['fascicle_model'] = 'image'
+    # Last resort (D048/D050): the video IFSS fascicle model, only when the image model gives no estimate.
+    if ifss is not None and chosen.summary['status'] not in ('ok', 'low_confidence'):
+        video = run(ifss)
+        best = video[choose([c.summary for c in video])]
+        if choose([chosen.summary, best.summary]) == 1:
+            for c in candidates:
+                if c.fig is not None:
+                    plt.close(c.fig)
+            candidates, chosen = video, best
+            chosen.summary['fascicle_model'] = 'ifss'
+        else:
+            for c in video:
+                if c.fig is not None:
+                    plt.close(c.fig)
     if chosen.summary['status'] == 'error':
         raise chosen.error
     for c in candidates:
@@ -366,6 +393,7 @@ def main():
     inputs.add_argument('--manifest', type=Path, help='JSON list of path, optional flip (0, 1 or "auto", default auto), crop ("auto", "none" or [x0,y0,x1,y1], default auto), and either verified mm_per_pixel or calibration (see calibration.from_spec)')
     parser.add_argument('--output', type=Path, required=True, help='New output directory; never overwrite a run')
     parser.add_argument('--profile', choices=['reference', 'current'], default='reference')
+    parser.add_argument('--ifss-fallback', action='store_true', help='retry images without an estimate using the video IFSS fascicle model (v10)')
     parser.add_argument('--weights-dir', type=Path, help='folder with apo/fasc _finetuned.weights.h5 from finetune.py')
     args = parser.parse_args()
     if args.examples:
@@ -385,15 +413,20 @@ def main():
         settings = json.loads((ROOT/'references/DL_Track_US/DL_Track_US/gui_helpers/gui_files/settings.json').read_text())
     args.output.mkdir(parents=True, exist_ok=False)
     geometry, models = load_geometry(), load_models(args.weights_dir)
+    ifss = None
+    if args.ifss_fallback:
+        from run_video import load_video_model  # lazy: run_video imports this module
+        ifss = load_video_model()
     run = {'upstream_revision': REVISION, 'tensorflow': tf.__version__, 'settings': settings,
            'checkpoints': CHECKPOINTS, 'inputs': items, 'results': [],
+           'ifss_fallback': bool(args.ifss_fallback),
            'finetuned_weights': sorted(str(p) for p in Path(args.weights_dir).glob('*_finetuned.weights.h5')) if args.weights_dir else [],
            'adapter_settings': {'minimal_fascicle_count': MIN_FASCICLES, 'default_flip': 'auto', 'default_crop': 'auto'}}
     for index, item in enumerate(items):
         start = time.monotonic()
         output = args.output/f'{index+1:02d}_{Path(item["path"]).stem}'
         try:
-            row = analyse(item, models, geometry, settings, output)
+            row = analyse(item, models, geometry, settings, output, ifss)
         except Exception as error:
             plt.close('all')
             row = {'input': item['path'], 'status': 'error', 'error': f'{type(error).__name__}: {error}'}

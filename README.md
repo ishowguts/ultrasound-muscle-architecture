@@ -20,6 +20,7 @@ Download the official checkpoints into `models/` with these exact filenames. The
 
 - [Aponeurosis checkpoint](https://osf.io/download/6jzuy/): `model-apo-VGG16_DiceBCE_512_300.h5`
 - [Fascicle checkpoint](https://osf.io/download/6fpkt/): `model-fasc-VGG16_DiceBCE_200_512.h5`
+- [Video fascicle checkpoint (IFSS)](https://osf.io/download/n823q/): `model-fasc-IFSS_1Encoder_3d_a08_g2_noaug_nocrop_HL.h5` (video tool and `--ifss-fallback`)
 
 Download the official test inputs into `data/raw/dltrack_examples/images/`: [1.tif](https://osf.io/download/frjzm/), [2.tif](https://osf.io/download/696d0e317e11a02234d8ea41/), [3.tif](https://osf.io/download/696d0e372ab52e112857b6b9/), [4.tif](https://osf.io/download/696d0e357e11a02234d8ea46/) and [flip_flags.txt](https://osf.io/download/zt5nd/).
 
@@ -40,11 +41,22 @@ Every run requires a **new output directory**.
 
 ### Kaggle submission (UMUD test set)
 
+Best submission (v10, public score 0.44105), about 70 minutes for 309 images:
+
 ```sh
 .venv/bin/python test_submission.py
-.venv/bin/python run_analysis.py --manifest test_manifest_309.json --output outputs/test309_run1
-.venv/bin/python make_submission.py outputs/test309_run1 --output outputs/submission_v1
+.venv/bin/python run_analysis.py --manifest test_manifest_309.json --ifss-fallback --output outputs/test309_v10_reproduce
+.venv/bin/python make_submission.py outputs/test309_v10_reproduce --recompute-thickness --output outputs/submission_v10_reproduce
 ```
+
+Upload `submission.csv` from the last folder. What each step adds:
+
+- Muscle thickness is the perpendicular distance between the two fitted aponeurosis lines at 25%, 50% and 75% of their overlap (`measure.py`), replacing the upstream loop that indexed the lower aponeurosis by x-coordinate values.
+- When the default pair of aponeuroses yields no fascicles or a thickness under 10 mm, the runner retries with the adjacent pair of bands that encloses the most fascicle pixels (`apo_pair.py`); rows record `aponeurosis_pair`.
+- `--ifss-fallback`: when both orientations still give no estimate, the runner retries with the video IFSS fascicle model on the single frame stacked three times; rows record `fascicle_model` (`image` or `ifss`).
+- `--recompute-thickness` re-measures thickness from saved lines, so older runs can be exported with the same method.
+
+Scores of every submission and what changed are in `docs/VALIDATION.md`.
 
 `test_manifest_309.json` lists all 309 test images with automatic orientation, crop and ruler detection (`"calibration": {"method": "auto"}`). The ruler detector knows the layouts of the three test-set devices and reads the vertical scale (or the bottom 1 cm ticks on older scans), as the organisers specify. `make_submission.py` writes comma-separated `submission.csv` (`image_id,pa_deg,fl_mm,mt_mm`), an identical `submission_comma.csv` compatibility copy, and `details.csv` showing for every value whether it was measured, or filled with the median of the same scan layout (failed analysis, undetected ruler, or a value outside the label ranges published by the organisers, which signals a wrong aponeurosis or fascicle pick). The run is fully automatic; no test image is labelled by hand.
 
@@ -87,5 +99,9 @@ Millimetre values assume the same pixel spacing on both axes; raw pixel values a
 - `ok` means finite measurements were produced, not that their anatomical accuracy is established. `low_confidence` means finite measurements from fewer than 3 retained fascicles; numbers are exported but should not be trusted without review. Other statuses include `no_geometry`, `no_fascicles`, `invalid_geometry` and `error`. Missing results are null, not zero. Extrapolated line points may extend outside the image.
 
 The default `reference` settings follow the upstream documented backup. `--profile current` uses the pinned source's current settings file, which differs from that reference. Model inference is performed once per image and model, followed by the unmodified upstream geometry routine. Physical calibration, manual ground-truth evaluation, a user interface and video integration remain separate work.
+
+### Fine-tuning (tried, not adopted)
+
+`fine_tune_kaggle.ipynb` (same code as `finetune.py`) fine-tunes both image checkpoints on the UMUD training masks on a Kaggle GPU and saves `<target>_finetuned.weights.h5` only when validation Dice beats the pretrained model. `run_analysis.py --weights-dir <folder>` loads such files. Validation Dice improved (aponeurosis 0.925 to 0.949, fascicle 0.410 to 0.512) but the public score got worse (0.478 combined with the v10 fallbacks, 0.528 alone, against 0.441), so submissions use the pretrained weights.
 
 The Kaggle uploader requires commas: uploading a semicolon-separated file produces `ID column image_id not found in submission`. For the preserved v2 baseline, upload `outputs/submission_v2/submission_comma.csv`. New exports use commas by default. A successful upload and returned score are still required; local format checks do not measure accuracy.
