@@ -67,4 +67,9 @@ assert fascicle_geometry(lines[:2]) is None
 rows_lc = dict(rows); rows_lc['G.tif'] = row('G.tif', 'low_confidence', pa=40.0)
 lc = {d['image_id']: d for d in ms.build(sorted(rows_lc), rows_lc, low_confidence_median=True)}
 assert lc['G.tif']['pa_deg_source'] == 'layout_median' and lc['G.tif']['mt_mm_source'] == 'model'
-print('Passed: ruler and fallback scale, measured/imputed/out-of-range values, missing images, comma-delimited exports, FL from MT, thickness re-measure, exact fascicle geometry, low-confidence medians.')
+# Hidden macOS companions ('._name' on ExFAT drives) are not test images.
+with tempfile.TemporaryDirectory() as directory:
+    for n in ('A.tif', '._A.tif', 'B.png', 'notes.txt'):
+        (Path(directory) / n).write_bytes(b'')
+    assert ms.test_images(Path(directory)) == ['A.tif', 'B.png']
+print('Passed: hidden-file filter, ruler and fallback scale, measured/imputed/out-of-range values, missing images, comma-delimited exports, FL from MT, thickness re-measure, exact fascicle geometry, low-confidence medians.')

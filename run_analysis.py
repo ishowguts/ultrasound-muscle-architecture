@@ -245,7 +245,11 @@ def infer(region, flip, models, geometry, settings, min_thickness_px=None, ifss=
     for p in predictions.values():
         if p.shape != (1, 512, 512, 1) or not np.isfinite(p).all():
             raise ValueError('Invalid model prediction')
-    summary, fig = measure_geometry(batch, oriented, predictions['apo'], predictions['fasc'], geometry, settings)
+    upstream_error = None
+    try:
+        summary, fig = measure_geometry(batch, oriented, predictions['apo'], predictions['fasc'], geometry, settings)
+    except Exception as error:  # upstream geometry can raise in one orientation (IMG_00232); still try the guided pair
+        summary, fig, upstream_error = {'fascicle_count': 0, 'status': 'error', 'thickness_px': None}, None, error
     summary['aponeurosis_pair'] = 'upstream'
     # Fallback only for failures (D045): upstream may pair skin/fat layers instead of the muscle's aponeuroses.
     if summary['status'] != 'ok' or not thickness_ok(summary, min_thickness_px):
@@ -262,6 +266,8 @@ def infer(region, flip, models, geometry, settings, min_thickness_px=None, ifss=
                 predictions = dict(predictions, apo=apo)
             elif guided_fig is not None:
                 plt.close(guided_fig)
+    if upstream_error is not None and summary['status'] == 'error':
+        raise upstream_error
     return SimpleNamespace(flip=flip, predictions=predictions, fig=fig, summary=summary)
 
 

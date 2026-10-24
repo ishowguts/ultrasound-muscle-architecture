@@ -20,7 +20,8 @@ MEASURED = ('ok', 'low_confidence')
 
 
 def test_images(folder=TEST_DIR):
-    return sorted(p.name for p in folder.iterdir() if p.suffix.lower() in ('.tif', '.tiff', '.png'))
+    # Skip hidden files: macOS writes '._<name>' companions on ExFAT/FAT drives.
+    return sorted(p.name for p in folder.iterdir() if p.suffix.lower() in ('.tif', '.tiff', '.png') and not p.name.startswith('.'))
 
 
 def load_rows(run_dirs, recompute_thickness=False, exact_pa=False, exact_fl=False):
